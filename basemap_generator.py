@@ -1,200 +1,27 @@
+import os
+import subprocess
+from tqdm import tqdm
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
-from tqdm import tqdm
 import json
-import os
-import subprocess
-from datetime import datetime
 import time
-import threading
-import signal
-import sys
-import sqlite3
-
-def get_tif_urls():
-    """Get direct NAIP TIF URLs for Kentucky state divided into smaller regions"""
-    stac_search_url = "https://planetarycomputer.microsoft.com/api/stac/v1/search"
-    
-    # More precise Kentucky regions with smaller bounding boxes
-    regions = {
-        "Northwest": [-88.750000, 37.800000, -87.500000, 38.750000],
-        "North Central": [-85.800000, 37.800000, -84.500000, 38.750000],
-        "Northeast": [-84.000000, 37.800000, -82.500000, 38.750000],
-        "Central West": [-88.750000, 37.000000, -87.500000, 37.800000],
-        "Central": [-85.800000, 37.000000, -84.500000, 37.800000],
-        "Central East": [-84.000000, 37.000000, -82.500000, 37.800000],
-        "Southwest": [-88.750000, 36.500000, -87.500000, 37.000000],
-        "South Central": [-85.800000, 36.500000, -84.500000, 37.000000],
-        "Southeast": [-84.000000, 36.500000, -82.500000, 37.000000]
-    }
-
-    all_urls = []
-    latest_year = None
-    session = create_retry_session()
-
-    for region_name, bbox in regions.items():
-        print(f"Searching region: {region_name}")
-        search_params = {
-            "collections": ["naip"],
-            "bbox": bbox,
-            "limit": 100,
-            "query": {
-                "datetime": {"gte": "2018-01-01"},
-            }
-        }
-
-        try:
-            response = session.post(stac_search_url, json=search_params)
-            response.raise_for_status()
-            
-            features = response.json().get('features', [])
-            if features:
-                sorted_features = sorted(features, key=lambda x: x['properties']['datetime'], reverse=True)
-
-                if latest_year is None:
-                    latest_year = datetime.strptime(sorted_features[0]['properties']['datetime'], '%Y-%m-%dT%H:%M:%SZ').year
-
-                region_features = [f for f in sorted_features 
-                               if datetime.strptime(f['properties']['datetime'], '%Y-%m-%dT%H:%M:%SZ').year == latest_year]
-
-                for feature in region_features:
-                    url = feature['assets']['image']['href']
-                    if url not in all_urls:
-                        all_urls.append(url)
-                        
-        except requests.exceptions.RequestException as e:
-            print(f"Error fetching data for region {region_name}: {e}")
-            continue
-
-    return all_urls
-
-class DownloadTimeout(Exception):
-    pass
-
-def download_with_timeout(session, url, filename, timeout=300, chunk_size=1024*1024):
-    """Download with timeout for each chunk"""
-    try:
-        response = session.get(url, stream=True)
-        response.raise_for_status()
-        total_size = int(response.headers.get('content-length', 0))
-        
-        progress_bar = tqdm(
-            total=total_size,
-            unit='iB',
-            unit_scale=True,
-            unit_divisor=1024,
-        )
-
-        downloaded = 0
-        last_update = time.time()
-        
-        with open(filename, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=chunk_size):
-                if chunk:
-                    current_time = time.time()
-                    # Check if we've gone too long without progress
-                    if current_time - last_update > timeout:
-                        raise DownloadTimeout(f"No progress for {timeout} seconds")
-                    
-                    f.write(chunk)
-                    size = len(chunk)
-                    downloaded += size
-                    progress_bar.update(size)
-                    last_update = current_time
-                    
-        progress_bar.close()
-        return True
-        
-    except Exception as e:
-        progress_bar.close()
-        if os.path.exists(filename):
-            os.remove(filename)
-        raise e
-
-def create_retry_session(retries=3, backoff_factor=0.3, timeout=300):
-    """Create a requests session with retry capability and timeouts"""
-    session = requests.Session()
-    retry = Retry(
-        total=retries,
-        read=retries,
-        connect=retries,
-        backoff_factor=backoff_factor,
-        status_forcelist=(500, 502, 503, 504),
-    )
-    adapter = HTTPAdapter(max_retries=retry)
-    session.mount('http://', adapter)
-    session.mount('https://', adapter)
-    session.timeout = timeout  # Set timeout for the entire session
-    return session
-
-def download_with_progress(url, filename, max_retries=3, timeout=300):
-    """Enhanced download function with timeout and retry logic"""
-    for attempt in range(max_retries):
-        try:
-            session = create_retry_session(timeout=timeout)
-            print(f"\nAttempt {attempt + 1}/{max_retries} for {filename}")
-            
-            download_with_timeout(session, url, filename, timeout=timeout)
-            return True
-            
-        except DownloadTimeout as e:
-            print(f"\nDownload timed out: {e}")
-            if os.path.exists(filename):
-                os.remove(filename)
-            
-        except requests.exceptions.RequestException as e:
-            print(f"\nDownload attempt {attempt + 1} failed: {e}")
-            if os.path.exists(filename):
-                os.remove(filename)
-                
-        except Exception as e:
-            print(f"\nUnexpected error during download: {e}")
-            if os.path.exists(filename):
-                os.remove(filename)
-            
-        if attempt < max_retries - 1:
-            wait_time = (attempt + 1) * 15  # Progressive delay: 15s, 30s, 45s
-            print(f"Waiting {wait_time} seconds before retry...")
-            time.sleep(wait_time)
-        else:
-            print("Max retries reached. Moving to next file.")
-            return False
-
-def get_signed_url(url):
-    """Get signed URL with retry capability"""
-    session = create_retry_session()
-    sign_url = f"https://planetarycomputer.microsoft.com/api/sas/v1/sign?href={url}"
-    
-    try:
-        response = session.get(sign_url)
-        response.raise_for_status()
-        return response.json()['href']
-    except requests.exceptions.RequestException as e:
-        print(f"Error getting signed URL: {e}")
-        return None
+from datetime import datetime
 
 class ProcessTracker:
     def __init__(self, output_dir):
         self.progress_file = os.path.join(output_dir, 'download_progress.json')
-        self.lock_file = os.path.join(output_dir, '.processing.lock')
         self.completed_urls = self.load_progress()
 
     def load_progress(self):
         if os.path.exists(self.progress_file):
-            try:
-                with open(self.progress_file, 'r') as f:
-                    return set(json.load(f))
-            except json.JSONDecodeError:
-                print("Warning: Progress file corrupted, starting fresh")
-                return set()
+            with open(self.progress_file, 'r') as f:
+                return set(json.load(f))
         return set()
 
     def save_progress(self):
-        temp_file = self.progress_file + '.tmp'
-        with open(temp_file, 'w') as f:
+        with open(self.progress_file, 'w') as f:
             json.dump(list(self.completed_urls), f)
-        os.replace(temp_file, self.progress_file)  # Atomic update
 
     def mark_completed(self, url):
         self.completed_urls.add(url)
@@ -203,136 +30,195 @@ class ProcessTracker:
     def is_completed(self, url):
         return url in self.completed_urls
 
-def convert_to_mbtiles(input_tif, output_mbtiles):
-    """Convert TIF to MBTiles with proper error handling"""
-    tiles_dir = 'tiles_dir'
+def create_retry_session(retries=3, backoff_factor=0.3, timeout=300):
+    session = requests.Session()
+    retry = Retry(total=retries, backoff_factor=backoff_factor, status_forcelist=[500, 502, 503, 504])
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount('http://', adapter)
+    session.mount('https://', adapter)
+    session.timeout = timeout
+    return session
+
+def download_tif(url, output_path, max_retries=3):
+    session = create_retry_session()
+    for attempt in range(max_retries):
+        try:
+            response = session.get(url, stream=True)
+            response.raise_for_status()
+            total_size = int(response.headers.get('content-length', 0))
+            
+            with open(output_path, 'wb') as file, tqdm(
+                desc=output_path,
+                total=total_size,
+                unit='iB',
+                unit_scale=True,
+                unit_divisor=1024,
+            ) as progress_bar:
+                for data in response.iter_content(chunk_size=1024):
+                    size = file.write(data)
+                    progress_bar.update(size)
+            return True
+        except requests.RequestException as e:
+            print(f"Download attempt {attempt + 1} failed: {e}")
+            if attempt < max_retries - 1:
+                wait_time = (attempt + 1) * 5
+                print(f"Waiting {wait_time} seconds before retry...")
+                time.sleep(wait_time)
+            else:
+                print("Max retries reached. Moving to next file.")
+                return False
+
+def get_tif_urls():
+    """Get direct NAIP TIF URLs for a specific area in Kentucky"""
+    stac_search_url = "https://planetarycomputer.microsoft.com/api/stac/v1/search"
+    
+    kentucky_polygon = {
+        "type": "Polygon",
+        "coordinates": [[
+            [-85.76975230223191, 37.63831975175371],
+            [-85.79792299732526, 37.556622960281146],
+            [-85.77917808348003, 37.558211386666116],
+            [-85.7731342906098, 37.58369784583759],
+            [-85.76039471747762, 37.61128549203865],
+            [-85.74833151247218, 37.63142760638745],
+            [-85.51777647369674, 37.62988516059704],
+            [-85.51709126957944, 37.64263083576242],
+            [-85.64388882701948, 37.64311140194164],
+            [-85.76975230223191, 37.63831975175371]
+        ]]
+    }
+
+    all_urls = []
+    latest_year = None
+    session = create_retry_session()
+
+    search_params = {
+        "collections": ["naip"],
+        "intersects": kentucky_polygon,
+        "limit": 100,
+        "query": {
+            "datetime": {"gte": "2018-01-01"},
+            #"naip:state": {"eq": "KY"}
+        }
+    }
 
     try:
-        # Clean up any existing files
-        if os.path.exists(tiles_dir):
-            subprocess.run(['rm', '-rf', tiles_dir], check=True)
-        if os.path.exists(output_mbtiles):
-            os.remove(output_mbtiles)
-
-        # Generate tiles
-        subprocess.run([
-            'gdal2tiles.py',
-            '-p', 'mercator',
-            '-z', '0-18',
-            '-w', 'none',
-            '--xyz',
-            '--processes=4',
-            '-r', 'bilinear',
-            '--webviewer=none',
-            input_tif,
-            tiles_dir
-        ], check=True)
-
-        # Create MBTiles
-        subprocess.run([
-            'mb-util',
-            '--image_format=png',
-            '--scheme=xyz',
-            tiles_dir,
-            output_mbtiles
-        ], check=True)
-
-        # Add metadata
-        conn = sqlite3.connect(output_mbtiles)
-        c = conn.cursor()
+        response = session.post(stac_search_url, json=search_params)
+        response.raise_for_status()
         
-        c.execute('''CREATE TABLE IF NOT EXISTS metadata 
-                     (name text, value text)''')
+        print(f"API Response Status Code: {response.status_code}")
+        print(f"API Response Content: {response.text[:500]}...")  # Print first 500 characters
         
-        metadata = [
-            ('name', os.path.basename(output_mbtiles)),
-            ('type', 'overlay'),
-            ('version', '1.1'),
-            ('format', 'png'),
-            ('bounds', '-180.0,-85.0511,180.0,85.0511'),
-            ('minzoom', '0'),
-            ('maxzoom', '18'),
-        ]
+        features = response.json().get('features', [])
+        print(f"Number of features found: {len(features)}")
         
-        c.executemany('INSERT OR REPLACE INTO metadata VALUES (?, ?)', metadata)
-        conn.commit()
-        conn.close()
+        if features:
+            sorted_features = sorted(features, key=lambda x: x['properties']['datetime'], reverse=True)
 
-        return True
+            if latest_year is None:
+                latest_year = datetime.strptime(sorted_features[0]['properties']['datetime'], '%Y-%m-%dT%H:%M:%SZ').year
+            
+            print(f"Latest year: {latest_year}")
 
-    except subprocess.CalledProcessError as e:
-        print(f"Error during conversion: {e}")
-        return False
-    except Exception as e:
-        print(f"Unexpected error during conversion: {e}")
-        return False
-    finally:
-        # Always cleanup
-        if os.path.exists(tiles_dir):
-            subprocess.run(['rm', '-rf', tiles_dir])
+            region_features = [f for f in sorted_features 
+                           if datetime.strptime(f['properties']['datetime'], '%Y-%m-%dT%H:%M:%SZ').year == latest_year]
+
+            print(f"Number of features for the latest year: {len(region_features)}")
+
+            for feature in region_features:
+                url = feature['assets']['image']['href']
+                if url not in all_urls:
+                    all_urls.append(url)
+                    
+        print(f"Number of unique URLs found: {len(all_urls)}")
+                    
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching data: {e}")
+
+    return all_urls
+
+def process_tifs(tif_urls, output_dir):
+    os.makedirs(output_dir, exist_ok=True)
+    tracker = ProcessTracker(output_dir)
+    input_files = []
+
+    for i, url in enumerate(tif_urls, 1):
+        if tracker.is_completed(url):
+            print(f"Skipping already completed image {i} of {len(tif_urls)}")
+            continue
+
+        print(f"Processing image {i} of {len(tif_urls)}")
+        tif_path = os.path.join(output_dir, f"input_{i}.tif")
+        if download_tif(url, tif_path):
+            input_files.append(tif_path)
+            tracker.mark_completed(url)
+
+    if not input_files:
+        print("No new files to process.")
+        return
+
+    with open('input_files.txt', 'w') as f:
+        f.write('\n'.join(input_files))
+
+    merged_tif = os.path.join(output_dir, "final_merge.tif")
+    subprocess.run([
+        'gdalwarp', '-overwrite', '-r', 'lanczos',
+        '-co', 'COMPRESS=LZW',
+        '-co', 'TILED=YES',
+        '-co', 'BLOCKXSIZE=256',
+        '-co', 'BLOCKYSIZE=256',
+        '-co', 'PREDICTOR=2',
+        '-co', 'BIGTIFF=YES',
+        '-t_srs', 'EPSG:3857',
+        '-tr', '0.3', '0.3',
+        '-tap',
+        '-multi',
+        '-wo', 'NUM_THREADS=ALL_CPUS',
+        '-of', 'GTiff',
+        '-dstnodata', '0',
+        '-srcnodata', '0',
+        '-input_file_list', 'input_files.txt',
+        merged_tif
+    ])
+
+    subprocess.run([
+        'gdaladdo', '-r', 'average', '-ro',
+        '--config', 'COMPRESS_OVERVIEW', 'LZW',
+        '--config', 'PREDICTOR_OVERVIEW', '2',
+        merged_tif,
+        '2', '4', '8', '16', '32', '64', '128'
+    ])
+
+    final_mbtiles = os.path.join(output_dir, "final_merge_raster.mbtiles")
+    subprocess.run([
+        'gdal_translate', '-of', 'MBTILES',
+        '-co', 'TILE_FORMAT=JPG',
+        '-co', 'QUALITY=95',
+        '-co', 'ZOOM_LEVEL_STRATEGY=LOWER',
+        '-co', 'RESAMPLING=CUBIC',
+        '-co', 'COMPRESS=LZW',
+        '-co', 'MINZOOM=1',
+        '-co', 'MAXZOOM=16',
+        merged_tif, final_mbtiles
+    ])
+
+    subprocess.run([
+        'gdaladdo', '-r', 'cubic',
+        '--config', 'COMPRESS_OVERVIEW', 'JPEG',
+        '--config', 'JPEG_QUALITY_OVERVIEW', '95',
+        final_mbtiles,
+        '2', '4', '8', '16', '32', '64', '128', '256', '512', '1024', '2048', '4096', '8192', '16384', '32768'
+    ])
+
+    print(f"Process complete. Output files in {output_dir}")
 
 def main():
-    # Setup signal handler for graceful shutdown
-    def signal_handler(signum, frame):
-        print("\nReceived shutdown signal. Cleaning up...")
-        if os.path.exists('temp_tif'):
-            os.remove('temp_tif')
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-
-    output_dir = os.environ.get('OUTPUT_DIR', './output')
-    os.makedirs(output_dir, exist_ok=True)
-
-    tracker = ProcessTracker(output_dir)
-    
-    try:
-        tif_urls = get_tif_urls()
-        if not tif_urls:
-            print("No NAIP images found.")
-            return
-
-        for i, url in enumerate(tif_urls, 1):
-            if tracker.is_completed(url):
-                print(f"\nSkipping already completed image {i} of {len(tif_urls)}")
-                continue
-
-            print(f"\nProcessing image {i} of {len(tif_urls)}")
-            temp_tif = os.path.join(output_dir, f"temp_ky_{i}.tif")
-            output_mbtiles = os.path.join(output_dir, f"kentucky_{i}.mbtiles")
-
-            # Get signed URL with retries
-            max_attempts = 3
-            signed_url = None
-            for attempt in range(max_attempts):
-                signed_url = get_signed_url(url)
-                if signed_url:
-                    break
-                if attempt < max_attempts - 1:
-                    print(f"Failed to get signed URL, retrying in 10 seconds...")
-                    time.sleep(10)
-
-            if not signed_url:
-                print(f"Could not get signed URL for image {i} after {max_attempts} attempts")
-                continue
-
-            # Download with timeout and progress tracking
-            if download_with_progress(signed_url, temp_tif, max_retries=3, timeout=300):
-                if os.path.exists(temp_tif):
-                    print(f"Converting TIF {i} to MBTiles...")
-                    if convert_to_mbtiles(temp_tif, output_mbtiles):
-                        tracker.mark_completed(url)
-                    os.remove(temp_tif)
-
-        print("\nProcessing complete. Output files:")
-        print(os.listdir(output_dir))
-
-    except Exception as e:
-        print(f"Unexpected error in main process: {e}")
-        if os.path.exists('temp_tif'):
-            os.remove('temp_tif')
-        raise
+    output_dir = os.environ.get('OUTPUT_DIR', './output2')
+    tif_urls = get_tif_urls()
+    if not tif_urls:
+        print("No NAIP images found.")
+        return
+    process_tifs(tif_urls, output_dir)
 
 if __name__ == "__main__":
     main()

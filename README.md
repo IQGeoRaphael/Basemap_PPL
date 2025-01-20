@@ -33,17 +33,60 @@ docker run -v $(pwd)/output:/app/output naip-processor
 - Run container: `docker run -v $(pwd)/output:/app/output naip-processor`
 
 ### Advanced Usage (with resource limits)
+
+## run but output to bash terminal
 ```bash
-docker run \
-  --cpus=4 \
-  --memory=6g \
-  --memory-swap=8g \
+docker run -it \
+  --cpus=6 \
+  --memory=10g \
+  --memory-swap=14g \
   -v $(pwd)/output:/app/output \
-  naip-processor
+  naip-processor /bin/bash
+
+docker run -it \
+  --cpus=$(nproc) \
+  --memory=$(free -g | awk '/^Mem:/{print $2}')g \
+  --memory-swap=$(free -g | awk '/^Mem:/{print $2 * 1.5}')g \
+  -v $(pwd)/output:/app/output \
+  naip-processor /bin/bash
 ```
+
+
+
+##ad hoc queries in the terminal
+```
+gdalwarp -overwrite -r lanczos \
+  -co COMPRESS=LZW \
+  -co TILED=YES \
+  -co BLOCKXSIZE=256 \
+  -co BLOCKYSIZE=256 \
+  -co PREDICTOR=2 \
+  -co BIGTIFF=YES \
+  -t_srs EPSG:3857 \
+  -tr 0.3 0.3 \
+  -tap \
+  -multi \
+  -wo NUM_THREADS=ALL_CPUS \
+  -of GTiff \
+  -dstnodata 0 \
+  -srcnodata 0 \
+  $(cat input_files.txt) \
+  final_merge.tif
+
+  gdaladdo -r average -ro --config COMPRESS_OVERVIEW LZW --config PREDICTOR_OVERVIEW 2 final_merge.tif 2 4 8 16 32 64 128
+
+  gdal_translate -of MBTILES -co TILE_FORMAT=JPG -co QUALITY=95 -co ZOOM_LEVEL_STRATEGY=LOWER -co RESAMPLING=CUBIC -co COMPRESS=LZW final_merge.tif final_merge_raster.mbtiles
+
+gdaladdo -r cubic \
+  --config COMPRESS_OVERVIEW JPEG \
+  --config JPEG_QUALITY_OVERVIEW 95 \
+  final_merge.mbtiles \
+  2 4 8 16 32 64 128 256 512 1024 2048 4096 8192 16384 32768
 
 ### Cleaning Up
 The repository includes a `docker-clean` script for easy cleanup. Make it executable and use it:
+```
+
 
 ```bash
 chmod +x docker-clean

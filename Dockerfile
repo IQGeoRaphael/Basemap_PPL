@@ -1,11 +1,19 @@
 # Dockerfile
 FROM python:3.12-slim
 
-# Install only the necessary system dependencies
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     gdal-bin \
     python3-gdal \
     git \
+    build-essential \
+    libsqlite3-dev \
+    zlib1g-dev \
+    libspatialite-dev \
+    libgeos-dev \
+    libproj-dev \
+    proj-bin \
+    libgdal-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -20,15 +28,32 @@ RUN git clone --depth=1 https://github.com/mapbox/mbutil.git && \
     cd .. && \
     rm -rf mbutil
 
-# Copy and install requirements first (better caching)
+# Install tippecanoe
+RUN git clone https://github.com/mapbox/tippecanoe.git && \
+    cd tippecanoe && \
+    make -j$(nproc) && \
+    make install && \
+    cd .. && \
+    rm -rf tippecanoe
+
+# Install GDAL Python bindings
+RUN pip install --no-cache-dir \
+    GDAL==$(gdal-config --version) \
+    rasterio \
+    numpy
+
+# Copy and install requirements
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy script last as it changes most often
+# Copy script
 COPY basemap_generator.py .
 
 # Create directory for output
 RUN mkdir -p /app/output
+
+# Set environment variables
+ENV OUTPUT_DIR=/app/output
 
 # Run script
 CMD ["python", "basemap_generator.py"]
