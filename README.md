@@ -73,14 +73,14 @@ gdalwarp -overwrite -r lanczos \
   $(cat input_files.txt) \
   final_merge.tif
 
-  gdaladdo -r average -ro --config COMPRESS_OVERVIEW LZW --config PREDICTOR_OVERVIEW 2 final_merge.tif 2 4 8 16 32 64 128
+gdaladdo -r average -ro --config COMPRESS_OVERVIEW LZW --config PREDICTOR_OVERVIEW 2 final_merge.tif 2 4 8 16 32 64 128
 
-  gdal_translate -of MBTILES -co TILE_FORMAT=JPG -co QUALITY=95 -co ZOOM_LEVEL_STRATEGY=LOWER -co RESAMPLING=CUBIC -co COMPRESS=LZW final_merge.tif final_merge_raster.mbtiles
+gdal_translate -of MBTILES   -co TILE_FORMAT=JPEG   -co QUALITY=95   -co ZOOM_LEVEL_STRATEGY=LOWER   -co RESAMPLING=CUBIC   clipped.tif test.mbtiles
 
 gdaladdo -r cubic \
   --config COMPRESS_OVERVIEW JPEG \
   --config JPEG_QUALITY_OVERVIEW 95 \
-  final_merge.mbtiles \
+  test.mbtiles \
   2 4 8 16 32 64 128 256 512 1024 2048 4096 8192 16384 32768
 
 ### Cleaning Up

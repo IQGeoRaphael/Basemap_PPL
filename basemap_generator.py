@@ -7,6 +7,20 @@ from urllib3.util import Retry
 import json
 import time
 from datetime import datetime
+import pdb
+import glob
+import logging
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+def run_command(command):
+    logging.info(f"Running command: {' '.join(command)}")
+    result = subprocess.run(command, capture_output=True, text=True)
+    if result.returncode != 0:
+        logging.error(f"Command failed with error: {result.stderr}")
+    else:
+        logging.info("Command completed successfully")
+    return result
 
 class ProcessTracker:
     def __init__(self, output_dir):
@@ -98,6 +112,7 @@ def get_tif_urls():
         "limit": 100,
         "query": {
             "datetime": {"gte": "2018-01-01"},
+            "gsd": {"eq": 0.6}
             #"naip:state": {"eq": "KY"}
         }
     }
@@ -140,29 +155,58 @@ def get_tif_urls():
 def process_tifs(tif_urls, output_dir):
     os.makedirs(output_dir, exist_ok=True)
     tracker = ProcessTracker(output_dir)
-    input_files = []
 
     for i, url in enumerate(tif_urls, 1):
         if tracker.is_completed(url):
-            print(f"Skipping already completed image {i} of {len(tif_urls)}")
+            logging.info(f"Skipping already completed image {i} of {len(tif_urls)}")
             continue
 
-        print(f"Processing image {i} of {len(tif_urls)}")
+        logging.info(f"Processing image {i} of {len(tif_urls)}")
         tif_path = os.path.join(output_dir, f"input_{i}.tif")
         if download_tif(url, tif_path):
-            input_files.append(tif_path)
             tracker.mark_completed(url)
 
+    input_files = glob.glob(os.path.join(output_dir, 'input_*.tif'))
+    
     if not input_files:
-        print("No new files to process.")
+        logging.error("No TIF files found in the output directory.")
         return
 
-    with open('input_files.txt', 'w') as f:
-        f.write('\n'.join(input_files))
+    vrt_file = os.path.join(output_dir, "merged.vrt")
+    gdalbuildvrt_command = [
+        'gdalbuildvrt',
+        '-overwrite',
+        '-r', 'lanczos',
+        vrt_file
+    ] + input_files
 
-    merged_tif = os.path.join(output_dir, "final_merge.tif")
-    subprocess.run([
-        'gdalwarp', '-overwrite', '-r', 'lanczos',
+    if run_command(gdalbuildvrt_command).returncode != 0:   return
+    kentucky_polygon = {
+        "type": "Polygon",
+        "coordinates": [[
+            [-85.76975230223191, 37.63831975175371],
+            [-85.79792299732526, 37.556622960281146],
+            [-85.77917808348003, 37.558211386666116],
+            [-85.7731342906098, 37.58369784583759],
+            [-85.76039471747762, 37.61128549203865],
+            [-85.74833151247218, 37.63142760638745],
+            [-85.51777647369674, 37.62988516059704],
+            [-85.51709126957944, 37.64263083576242],
+            [-85.64388882701948, 37.64311140194164],
+            [-85.76975230223191, 37.63831975175371]
+        ]]
+    }
+    polygon_file = os.path.join(output_dir, "kentucky_polygon.geojson")
+    with open(polygon_file, 'w') as f:
+        json.dump({"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {}, "geometry": kentucky_polygon}]}, f)
+
+    clipped_file = os.path.join(output_dir, "clipped.tif")
+    gdalwarp_command = [
+        'gdalwarp',
+        '-cutline', polygon_file,
+        '-crop_to_cutline',
+        '-r', 'lanczos',
+        '-of', 'GTiff',
         '-co', 'COMPRESS=LZW',
         '-co', 'TILED=YES',
         '-co', 'BLOCKXSIZE=256',
@@ -174,43 +218,39 @@ def process_tifs(tif_urls, output_dir):
         '-tap',
         '-multi',
         '-wo', 'NUM_THREADS=ALL_CPUS',
-        '-of', 'GTiff',
         '-dstnodata', '0',
         '-srcnodata', '0',
-        '-input_file_list', 'input_files.txt',
-        merged_tif
-    ])
-
-    subprocess.run([
-        'gdaladdo', '-r', 'average', '-ro',
-        '--config', 'COMPRESS_OVERVIEW', 'LZW',
-        '--config', 'PREDICTOR_OVERVIEW', '2',
-        merged_tif,
-        '2', '4', '8', '16', '32', '64', '128'
-    ])
-
+        vrt_file,
+        clipped_file
+    ]
+    if run_command(gdalwarp_command).returncode != 0:   return
     final_mbtiles = os.path.join(output_dir, "final_merge_raster.mbtiles")
-    subprocess.run([
+    gdal_translate_command = [
         'gdal_translate', '-of', 'MBTILES',
-        '-co', 'TILE_FORMAT=JPG',
-        '-co', 'QUALITY=95',
-        '-co', 'ZOOM_LEVEL_STRATEGY=LOWER',
+        '-co', 'TILE_FORMAT=JPEG',
         '-co', 'RESAMPLING=CUBIC',
-        '-co', 'COMPRESS=LZW',
-        '-co', 'MINZOOM=1',
+        '-co', 'MINZOOM=5',
         '-co', 'MAXZOOM=16',
-        merged_tif, final_mbtiles
-    ])
+        clipped_file, final_mbtiles
+    ]
 
-    subprocess.run([
-        'gdaladdo', '-r', 'cubic',
-        '--config', 'COMPRESS_OVERVIEW', 'JPEG',
-        '--config', 'JPEG_QUALITY_OVERVIEW', '95',
+    if run_command(gdal_translate_command).returncode != 0:
+        return
+
+    gdaladdo_mbtiles_command = [
+        'gdaladdo', '-r', 'lanczos',
+        '--config', 'COMPRESS_OVERVIEW', 'LZW',
         final_mbtiles,
         '2', '4', '8', '16', '32', '64', '128', '256', '512', '1024', '2048', '4096', '8192', '16384', '32768'
-    ])
+    ]
+    run_command(gdaladdo_mbtiles_command)
 
-    print(f"Process complete. Output files in {output_dir}")
+    # Clean up temporary files
+    #os.remove(vrt_file)
+    #os.remove(polygon_file)
+    #os.remove(clipped_file)
+
+    logging.info(f"Process complete. Output files in {output_dir}")
 
 def main():
     output_dir = os.environ.get('OUTPUT_DIR', './output2')
