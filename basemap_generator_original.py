@@ -261,7 +261,7 @@ def convert_to_mbtiles(input_tif, output_mbtiles):
         subprocess.run([
             'gdal2tiles.py',
             '-p', 'mercator',    # Mercator projection
-            '-z', '0-18',        # Zoom levels 0 to 18
+            '-z', '10-16',        # Zoom levels 0 to 18
             '-w', 'none',        # No world file generation
             '--xyz',             # XYZ tile naming convention
             '--processes=4',     # Parallel processing
@@ -301,8 +301,8 @@ def convert_to_mbtiles(input_tif, output_mbtiles):
             ('version', '1.1'),
             ('format', 'png'),
             ('bounds', bounds_str),  # Use precise bounds
-            ('minzoom', '0'),
-            ('maxzoom', '18'),
+            ('minzoom', '10'),
+            ('maxzoom', '16'),
             ('year', year)
         ]
         

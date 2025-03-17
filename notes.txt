@@ -1,0 +1,135 @@
+rm -f merged.vrt warped.tif final.mbtiles
+gdalbuildvrt -overwrite -r nearest merged.vrt m_3608321_ne_17_060_20231112.tif m_3608321_se_17_060_20231112.tif
+
+gdalwarp \
+    -overwrite \
+    -t_srs EPSG:3857 \
+    -r cubic \
+    -of GTiff \
+    -co TILED=YES \
+    -co BLOCKXSIZE=256 \
+    -co BLOCKYSIZE=256 \
+    merged.vrt warped.tif
+
+gdal_translate -of MBTILES   -co TILE_FORMAT=JPEG   -co QUALITY=100   -co ZOOM_LEVEL_STRATEGY=LOWER   -co RESAMPLING=CUBIC warped.tif final.mbtiles
+
+gdaladdo -r lanczos --config COMPRESS_OVERVIEW LZW final.mbtiles 2 4 8 16 32 64 128 256 512 1024 2048 4096 8192 16384 32768
+
+sqlite3 final.mbtiles << EOF
+UPDATE metadata SET value='1' WHERE name='minzoom';
+UPDATE metadata SET value='16' WHERE name='maxzoom';
+VACUUM;
+EOF
+
+
+
+
+sqlite3 initial.mbtiles << EOF
+-- Create tiles table
+CREATE TABLE tiles (
+    zoom_level integer,
+    tile_column integer,
+    tile_row integer,
+    tile_data blob
+);
+
+-- Create metadata table
+CREATE TABLE metadata (
+    name text,
+    value text
+);
+
+-- Insert basic metadata
+INSERT INTO metadata (name, value) VALUES ('format', 'jpeg');
+INSERT INTO metadata (name, value) VALUES ('minzoom', '1');
+INSERT INTO metadata (name, value) VALUES ('maxzoom', '16');
+
+-- Create indexes for efficient tile lookup
+CREATE UNIQUE INDEX tile_index ON tiles (zoom_level, tile_column, tile_row);
+EOF
+
+
+#!/bin/bash
+
+# Path to the initial MBTiles
+initial_mbtiles="initial.mbtiles"
+
+# Create the initial MBTiles file and the tiles table if they don't exist
+if [ ! -f "$initial_mbtiles" ]; then
+    sqlite3 "$initial_mbtiles" "CREATE TABLE IF NOT EXISTS tiles (zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER, tile_data BLOB, PRIMARY KEY (zoom_level, tile_column, tile_row));"
+    sqlite3 "$initial_mbtiles" "CREATE TABLE IF NOT EXISTS metadata (name TEXT, value TEXT, PRIMARY KEY (name));"
+fi
+
+# Counter to limit to 5 TIFs
+count=0
+
+# Loop through all .tif files in the current directory
+for tif_file in *.tif; do
+    # Break after 5 TIFs
+    if [ $count -ge 5 ]; then
+        break
+    fi
+
+    echo "Processing $tif_file..."
+
+    # Get the pixel size and dimensions of the TIF
+    pixel_size=$(gdalinfo "$tif_file" | grep "Pixel Size" | cut -d '(' -f 2 | cut -d ',' -f 1)
+    dimensions=$(gdalinfo "$tif_file" | grep "Size is" | cut -d ' ' -f 3-4)
+    width=$(echo $dimensions | cut -d ',' -f 1)
+    height=$(echo $dimensions | cut -d ',' -f 2)
+
+    # Convert TIF to temporary MBTiles
+    temp_mbtiles="temp_$(basename "$tif_file" .tif).mbtiles"
+    gdal_translate -of MBTILES \
+        -co TILE_FORMAT=JPEG \
+        -co RESAMPLING=CUBIC \
+        -co QUALITY=100 \
+        -outsize $width $height \
+        "$tif_file" "$temp_mbtiles"
+
+    # Append tiles from temporary MBTiles to the initial MBTiles
+    sqlite3 "$initial_mbtiles" << EOF
+ATTACH DATABASE '$temp_mbtiles' AS source;
+INSERT OR IGNORE INTO tiles (zoom_level, tile_column, tile_row, tile_data)
+SELECT DISTINCT zoom_level, tile_column, tile_row, tile_data 
+FROM source.tiles;
+EOF
+
+    # Remove the temporary MBTiles file
+    rm "$temp_mbtiles"
+
+    ((count++))
+done
+
+# Add overviews to the initial MBTiles
+gdaladdo -r cubic \
+    --config COMPRESS_OVERVIEW LZW \
+    "$initial_mbtiles" 2 4 8 16 32 64 128 256 512 1024 2048 4096
+
+# Update metadata for minzoom and maxzoom
+sqlite3 "$initial_mbtiles" << EOF
+INSERT OR REPLACE INTO metadata (name, value) VALUES ('minzoom', '1');
+INSERT OR REPLACE INTO metadata (name, value) VALUES ('maxzoom', '16');
+VACUUM;
+EOF
+
+echo "Process complete. Output file: $initial_mbtiles"
+
+
+gdalwarp \
+    -r bilinear \
+    -of GTiff \
+    -co TILED=YES \
+    -co BLOCKXSIZE=256 \
+    -co BLOCKYSIZE=256 \
+    -co COMPRESS=LZW \
+    -co PREDICTOR=2 \
+    -co BIGTIFF=YES \
+    -t_srs EPSG:3857 \
+    -tr 2.4 2.4 \
+    -tap \
+    -wo UNIFIED_SRC_NODATA=YES \
+    -wo CUTLINE_ALL_TOUCHED=TRUE \
+    -srcnodata 0 \
+    -dstnodata 0 \
+    "$file_path" "$output_path"
