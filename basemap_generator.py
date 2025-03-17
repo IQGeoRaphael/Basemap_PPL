@@ -121,7 +121,7 @@ def get_tif_urls():
     search_params = {
         "collections": ["naip"],
         "intersects": kentucky_polygon,
-        "limit": 10,  # Only get one image as requested
+        "limit": 2,  # Only get one image as requested
         "query": {
             "datetime": {"gte": "2020-01-01"}, # Most recent data will typically have better color processing
             "gsd": {"lte": 0.6}  # Get the highest quality imagery available
@@ -345,7 +345,9 @@ def check_gdal_version():
         logging.warning(f"Could not check GDAL version: {e}")
 
 def main():
-    output_dir = './final'
+    # Get output directory from environment variable, with fallback
+    output_dir = os.environ.get('OUTPUT_DIR', '/app/output')
+    logging.info(f"Using output directory: {output_dir}")
     
     logging.info("Starting NAIP imagery download and processing at 1m resolution...")
     
@@ -362,7 +364,7 @@ def main():
     logging.info(f"Found {len(tif_urls)} NAIP images to process.")
     process_tifs(tif_urls, output_dir)
     
-    logging.info("✅ Processing complete! Rich color agricultural satellite imagery has been saved to the 'final' directory.")
+    logging.info("✅ Processing complete! Rich color agricultural satellite imagery has been saved to the output directory.")
 
 if __name__ == "__main__":
     main()

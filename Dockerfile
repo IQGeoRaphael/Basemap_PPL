@@ -2,12 +2,14 @@
 FROM python:3.12-slim
 
 # Install system dependencies
+# Add sqlite3 to the apt-get install line
 RUN apt-get update && apt-get install -y \
     gdal-bin \
     python3-gdal \
     git \
     build-essential \
     libsqlite3-dev \
+    sqlite3 \  
     zlib1g-dev \
     libspatialite-dev \
     libgeos-dev \

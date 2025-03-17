@@ -2,6 +2,8 @@
 
 This tool downloads NAIP (National Agriculture Imagery Program) imagery for Kentucky and converts it to MBTiles format. It includes robust error handling, progress tracking, and automatic retries for failed downloads.
 
+https://planetarycomputer.microsoft.com/dataset/naip
+
 ## Prerequisites
 
 - Docker installed and running
